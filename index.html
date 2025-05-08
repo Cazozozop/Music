@@ -2,152 +2,184 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <title>Beat Edit Visualizer</title>
+  <title>Beat Edit Generator</title>
   <style>
-    body { text-align: center; font-family: sans-serif; background: #111; color: white; }
-    canvas { background: black; margin: 10px auto; display: block; }
-    input { margin: 10px; }
+    body {
+      background: #0e0e0e;
+      color: white;
+      font-family: Arial, sans-serif;
+      text-align: center;
+    }
+    canvas {
+      margin-top: 20px;
+      border: 2px solid #333;
+      background: black;
+    }
+    input, button {
+      margin: 10px;
+      padding: 10px;
+      font-size: 16px;
+    }
   </style>
 </head>
 <body>
-  <h1>🎵 Beat Edit Video Generator</h1>
+  <h1>🎬 Générateur d'Edit CapCut</h1>
+  <p>Importe une musique (.mp3) et des images, puis clique sur "Preview".</p>
   <input type="file" id="audioInput" accept="audio/*"><br>
   <input type="file" id="imageInput" accept="image/*" multiple><br>
-  <button id="startButton">Prévisualiser</button>
-  <button id="exportButton">Exporter en vidéo</button>
-  <br>
+  <button id="preview">Preview</button>
+  <button id="export">Exporter la vidéo</button><br>
   <canvas id="canvas" width="640" height="360"></canvas>
-  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
-  <script>
-    const audioInput = document.getElementById('audioInput');
-    const imageInput = document.getElementById('imageInput');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    const startButton = document.getElementById('startButton');
-    const exportButton = document.getElementById('exportButton');
 
-    let audioBuffer, images = [], beats = [], animationFrames = [];
-    let audioContext = new AudioContext();
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const audioInput = document.getElementById('audioInput');
+const imageInput = document.getElementById('imageInput');
+const previewBtn = document.getElementById('preview');
+const exportBtn = document.getElementById('export');
 
-    function detectBeats(audioData) {
-      let threshold = 0.3;
-      let beats = [];
-      let i = 0;
-      while (i < audioData.length) {
-        if (Math.abs(audioData[i]) > threshold) {
-          beats.push(i / audioContext.sampleRate);
-          i += 20000; // skip some samples to avoid duplicates
-        }
-        i++;
-      }
-      return beats;
+let audioContext = new AudioContext();
+let images = [], audioBuffer, beats = [], frames = [];
+
+function log(msg) { console.log('[INFO]', msg); }
+
+async function loadImages(files) {
+  return Promise.all([...files].map(file => {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.src = URL.createObjectURL(file);
+    });
+  }));
+}
+
+async function detectBeats(buffer) {
+  const raw = buffer.getChannelData(0);
+  const threshold = 0.27;
+  const beats = [];
+  let i = 0;
+  while (i < raw.length) {
+    if (Math.abs(raw[i]) > threshold) {
+      beats.push(i / buffer.sampleRate);
+      i += 22000;
+    }
+    i++;
+  }
+  return beats;
+}
+
+function drawFrame(img, scale, angle, flash, shakeX) {
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.save();
+  ctx.clearRect(0, 0, w, h);
+  ctx.translate(w / 2 + shakeX, h / 2);
+  ctx.rotate(angle);
+  ctx.scale(scale, scale);
+
+  const ratio = Math.min(w / img.width, h / img.height);
+  const iw = img.width * ratio;
+  const ih = img.height * ratio;
+
+  ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
+  ctx.restore();
+
+  if (flash) {
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.fillRect(0, 0, w, h);
+  }
+}
+
+async function generatePreview() {
+  if (!audioInput.files[0] || imageInput.files.length === 0) {
+    alert("Ajoute un MP3 et au moins une image.");
+    return;
+  }
+
+  const audioData = await audioInput.files[0].arrayBuffer();
+  audioBuffer = await audioContext.decodeAudioData(audioData);
+  images = await loadImages(imageInput.files);
+  beats = await detectBeats(audioBuffer);
+
+  const duration = audioBuffer.duration;
+  const fps = 30;
+  const totalFrames = Math.floor(duration * fps);
+  const beatFrames = beats.map(t => Math.floor(t * fps));
+
+  frames = [];
+  let currentImg = 0;
+
+  // 🔊 Lecture audio synchronisée
+  const source = audioContext.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(audioContext.destination);
+  source.start();
+
+  for (let f = 0; f < totalFrames; f++) {
+    if (beatFrames.includes(f)) {
+      currentImg = (currentImg + 1) % images.length;
     }
 
-    async function loadAudio(file) {
-      const arrayBuffer = await file.arrayBuffer();
-      audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-      const rawData = audioBuffer.getChannelData(0);
-      beats = detectBeats(rawData);
-      console.log("Beats detected:", beats.length);
-    }
+    const beatOffset = beatFrames.find(b => b >= f) - f || 0;
+    const scale = 1 + (beatOffset === 0 ? 0.5 : 0.1 * Math.exp(-Math.abs(beatOffset) / 3));
+    const angle = beatOffset === 0 ? (Math.random() - 0.5) * 0.2 : 0;
+    const shakeX = beatOffset === 0 ? (Math.random() - 0.5) * 20 : 0;
+    const flash = beatOffset === 0;
 
-    async function loadImages(files) {
-      images = await Promise.all([...files].map(file => {
-        return new Promise((resolve) => {
-          const img = new Image();
-          img.onload = () => resolve(img);
-          img.src = URL.createObjectURL(file);
-        });
-      }));
-    }
+    drawFrame(images[currentImg], scale, angle, flash, shakeX);
 
-    function drawFrame(image, scale) {
-      const w = canvas.width, h = canvas.height;
-      ctx.clearRect(0, 0, w, h);
-      const iw = image.width * scale;
-      const ih = image.height * scale;
-      ctx.drawImage(image, (w - iw) / 2, (h - ih) / 2, iw, ih);
-    }
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    frames.push(imageData);
 
-    async function previewAnimation() {
-      const duration = audioBuffer.duration;
-      let currentImage = 0;
-      let frameRate = 30;
-      let totalFrames = Math.floor(duration * frameRate);
-      let beatFrames = beats.map(t => Math.floor(t * frameRate));
+    await new Promise(r => setTimeout(r, 1000 / fps));
+  }
 
-      for (let i = 0; i < totalFrames; i++) {
-        if (beatFrames.includes(i)) {
-          currentImage = (currentImage + 1) % images.length;
-        }
+  alert("✅ Preview terminée ! Clique sur Exporter.");
+}
 
-        const beatDistance = beatFrames.find(f => f >= i) - i;
-        let scale = 1 + Math.exp(-Math.abs(beatDistance) / 4) * 0.2;
+async function exportVideo() {
+  const { createFFmpeg, fetchFile } = FFmpeg;
+  const ffmpeg = createFFmpeg({ log: true });
+  await ffmpeg.load();
 
-        drawFrame(images[currentImage], scale);
+  const fps = 30;
+  const width = canvas.width;
+  const height = canvas.height;
 
-        const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        animationFrames.push(frame);
+  for (let i = 0; i < frames.length; i++) {
+    const off = new OffscreenCanvas(width, height);
+    const ctx2 = off.getContext('2d');
+    ctx2.putImageData(frames[i], 0, 0);
+    const blob = await off.convertToBlob({ type: 'image/png' });
+    ffmpeg.FS('writeFile', `frame_${String(i).padStart(4, '0')}.png`, await fetchFile(blob));
+  }
 
-        await new Promise(r => setTimeout(r, 1000 / frameRate));
-      }
-    }
+  ffmpeg.FS('writeFile', 'audio.mp3', await fetchFile(audioInput.files[0]));
 
-    async function exportVideo() {
-      const { createFFmpeg, fetchFile } = FFmpeg;
-      const ffmpeg = createFFmpeg({ log: true });
-      await ffmpeg.load();
+  await ffmpeg.run(
+    '-framerate', `${fps}`,
+    '-i', 'frame_%04d.png',
+    '-i', 'audio.mp3',
+    '-c:v', 'libvpx-vp9',
+    '-c:a', 'libvorbis',
+    '-pix_fmt', 'yuv420p',
+    '-shortest',
+    'output.webm'
+  );
 
-      const width = canvas.width;
-      const height = canvas.height;
-      const frameRate = 30;
+  const data = ffmpeg.FS('readFile', 'output.webm');
+  const url = URL.createObjectURL(new Blob([data.buffer], { type: 'video/webm' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'edit.webm';
+  a.click();
+}
 
-      // Write PNG frames
-      for (let i = 0; i < animationFrames.length; i++) {
-        const offscreen = new OffscreenCanvas(width, height);
-        const offctx = offscreen.getContext('2d');
-        offctx.putImageData(animationFrames[i], 0, 0);
-        const blob = await offscreen.convertToBlob({ type: 'image/png' });
-        ffmpeg.FS('writeFile', `frame_${i.toString().padStart(4, '0')}.png`, await fetchFile(blob));
-      }
-
-      // Add audio
-      ffmpeg.FS('writeFile', 'audio.mp3', await fetchFile(audioInput.files[0]));
-
-      // Encode video
-      await ffmpeg.run(
-        '-framerate', `${frameRate}`,
-        '-i', 'frame_%04d.png',
-        '-i', 'audio.mp3',
-        '-c:v', 'libvpx-vp9',
-        '-c:a', 'libvorbis',
-        '-pix_fmt', 'yuv420p',
-        '-shortest',
-        'output.webm'
-      );
-
-      const data = ffmpeg.FS('readFile', 'output.webm');
-      const url = URL.createObjectURL(new Blob([data.buffer], { type: 'video/webm' }));
-
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'edit.webm';
-      a.click();
-    }
-
-    startButton.onclick = async () => {
-      if (!audioInput.files[0] || imageInput.files.length === 0) return alert("Ajoute audio + images");
-      await loadAudio(audioInput.files[0]);
-      await loadImages(imageInput.files);
-      animationFrames = [];
-      previewAnimation();
-    };
-
-    exportButton.onclick = async () => {
-      exportButton.innerText = "Export en cours...";
-      await exportVideo();
-      exportButton.innerText = "Exporter en vidéo";
-    };
-  </script>
+previewBtn.onclick = generatePreview;
+exportBtn.onclick = exportVideo;
+</script>
 </body>
 </html>
