@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <title>Beat Edit Generator</title>
+  <title>Générateur d'Edit CapCut</title>
   <style>
     body {
       background: #0e0e0e;
@@ -23,10 +23,10 @@
   </style>
 </head>
 <body>
-  <h1>🎬 Générateur d'Edit CapCut</h1>
-  <p>Importe une musique (.mp3) et des images, puis clique sur "Preview".</p>
+  <h1>🎥 Générateur d'Edit CapCut</h1>
+  <p>Importe un MP3 et des images ou une vidéo.</p>
   <input type="file" id="audioInput" accept="audio/*"><br>
-  <input type="file" id="imageInput" accept="image/*" multiple><br>
+  <input type="file" id="visualInput" accept="image/*,video/*" multiple><br>
   <button id="preview">Preview</button>
   <button id="export">Exporter la vidéo</button><br>
   <canvas id="canvas" width="640" height="360"></canvas>
@@ -36,108 +36,127 @@
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const audioInput = document.getElementById('audioInput');
-const imageInput = document.getElementById('imageInput');
+const visualInput = document.getElementById('visualInput');
 const previewBtn = document.getElementById('preview');
 const exportBtn = document.getElementById('export');
 
 let audioContext = new AudioContext();
-let images = [], audioBuffer, beats = [], frames = [];
+let visualElements = [], audioBuffer, beats = [], frames = [];
+let isVideo = false, videoElement;
 
-function log(msg) { console.log('[INFO]', msg); }
-
-async function loadImages(files) {
-  return Promise.all([...files].map(file => {
+function loadMedia(files) {
+  const fileList = [...files];
+  const videoFile = fileList.find(f => f.type.startsWith('video/'));
+  if (videoFile) {
+    isVideo = true;
     return new Promise(resolve => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.src = URL.createObjectURL(file);
+      videoElement = document.createElement('video');
+      videoElement.src = URL.createObjectURL(videoFile);
+      videoElement.crossOrigin = 'anonymous';
+      videoElement.onloadeddata = () => resolve([videoElement]);
     });
-  }));
+  } else {
+    isVideo = false;
+    return Promise.all(fileList.map(file => {
+      return new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.src = URL.createObjectURL(file);
+      });
+    }));
+  }
 }
 
 async function detectBeats(buffer) {
   const raw = buffer.getChannelData(0);
-  const threshold = 0.27;
+  const threshold = 0.25;
   const beats = [];
   let i = 0;
   while (i < raw.length) {
-    if (Math.abs(raw[i]) > threshold) {
-      beats.push(i / buffer.sampleRate);
-      i += 22000;
+    const energy = Math.abs(raw[i]);
+    if (energy > threshold) {
+      beats.push({
+        time: i / buffer.sampleRate,
+        intensity: Math.min(1, energy * 4)
+      });
+      i += 20000;
+    } else {
+      i++;
     }
-    i++;
   }
   return beats;
 }
 
-function drawFrame(img, scale, angle, flash, shakeX) {
+function drawVisual(el, scale, angle, flash, shakeX) {
   const w = canvas.width;
   const h = canvas.height;
-
   ctx.save();
   ctx.clearRect(0, 0, w, h);
   ctx.translate(w / 2 + shakeX, h / 2);
   ctx.rotate(angle);
   ctx.scale(scale, scale);
 
-  const ratio = Math.min(w / img.width, h / img.height);
-  const iw = img.width * ratio;
-  const ih = img.height * ratio;
+  const ratio = Math.min(w / el.videoWidth || el.width, h / el.videoHeight || el.height);
+  const iw = (el.videoWidth || el.width) * ratio;
+  const ih = (el.videoHeight || el.height) * ratio;
 
-  ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
+  ctx.drawImage(el, -iw / 2, -ih / 2, iw, ih);
   ctx.restore();
 
   if (flash) {
-    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
     ctx.fillRect(0, 0, w, h);
   }
 }
 
 async function generatePreview() {
-  if (!audioInput.files[0] || imageInput.files.length === 0) {
-    alert("Ajoute un MP3 et au moins une image.");
+  if (!audioInput.files[0] || visualInput.files.length === 0) {
+    alert("Ajoute un MP3 et au moins une image ou vidéo.");
     return;
   }
 
   const audioData = await audioInput.files[0].arrayBuffer();
   audioBuffer = await audioContext.decodeAudioData(audioData);
-  images = await loadImages(imageInput.files);
+  visualElements = await loadMedia(visualInput.files);
   beats = await detectBeats(audioBuffer);
 
   const duration = audioBuffer.duration;
   const fps = 30;
   const totalFrames = Math.floor(duration * fps);
-  const beatFrames = beats.map(t => Math.floor(t * fps));
 
-  frames = [];
-  let currentImg = 0;
+  const beatFrames = beats.map(b => ({ frame: Math.floor(b.time * fps), intensity: b.intensity }));
+  const beatMap = {};
+  beatFrames.forEach(b => beatMap[b.frame] = b.intensity);
 
-  // 🔊 Lecture audio synchronisée
+  // Play audio in sync
   const source = audioContext.createBufferSource();
   source.buffer = audioBuffer;
   source.connect(audioContext.destination);
   source.start();
 
+  if (isVideo) videoElement.play();
+
+  let currentImg = 0;
   for (let f = 0; f < totalFrames; f++) {
-    if (beatFrames.includes(f)) {
-      currentImg = (currentImg + 1) % images.length;
-    }
+    const beat = beatMap[f] || 0;
+    const decay = Math.exp(-((f % fps) / 8));
+    const intensity = beat * decay;
 
-    const beatOffset = beatFrames.find(b => b >= f) - f || 0;
-    const scale = 1 + (beatOffset === 0 ? 0.5 : 0.1 * Math.exp(-Math.abs(beatOffset) / 3));
-    const angle = beatOffset === 0 ? (Math.random() - 0.5) * 0.2 : 0;
-    const shakeX = beatOffset === 0 ? (Math.random() - 0.5) * 20 : 0;
-    const flash = beatOffset === 0;
+    const scale = 1 + intensity * 0.4;
+    const angle = (Math.random() - 0.5) * 0.1 * intensity;
+    const shakeX = (Math.random() - 0.5) * 20 * intensity;
+    const flash = intensity > 0.2;
 
-    drawFrame(images[currentImg], scale, angle, flash, shakeX);
+    if (!isVideo) currentImg = (f % (visualElements.length * 15)) / 15 | 0;
+    const visual = isVideo ? videoElement : visualElements[currentImg];
 
+    drawVisual(visual, scale, angle, flash, shakeX);
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     frames.push(imageData);
 
     await new Promise(r => setTimeout(r, 1000 / fps));
   }
-
-  alert("✅ Preview terminée ! Clique sur Exporter.");
+  alert("Preview terminée ! Clique sur Exporter.");
 }
 
 async function exportVideo() {
@@ -158,7 +177,6 @@ async function exportVideo() {
   }
 
   ffmpeg.FS('writeFile', 'audio.mp3', await fetchFile(audioInput.files[0]));
-
   await ffmpeg.run(
     '-framerate', `${fps}`,
     '-i', 'frame_%04d.png',
@@ -169,7 +187,6 @@ async function exportVideo() {
     '-shortest',
     'output.webm'
   );
-
   const data = ffmpeg.FS('readFile', 'output.webm');
   const url = URL.createObjectURL(new Blob([data.buffer], { type: 'video/webm' }));
   const a = document.createElement('a');
