@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Beat Edit Visualizer</title>
+  <style>
+    body { text-align: center; font-family: sans-serif; background: #111; color: white; }
+    canvas { background: black; margin: 10px auto; display: block; }
+    input { margin: 10px; }
+  </style>
+</head>
+<body>
+  <h1>🎵 Beat Edit Video Generator</h1>
+  <input type="file" id="audioInput" accept="audio/*"><br>
+  <input type="file" id="imageInput" accept="image/*" multiple><br>
+  <button id="startButton">Prévisualiser</button>
+  <button id="exportButton">Exporter en vidéo</button>
+  <br>
+  <canvas id="canvas" width="640" height="360"></canvas>
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+  <script>
+    const audioInput = document.getElementById('audioInput');
+    const imageInput = document.getElementById('imageInput');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const startButton = document.getElementById('startButton');
+    const exportButton = document.getElementById('exportButton');
+
+    let audioBuffer, images = [], beats = [], animationFrames = [];
+    let audioContext = new AudioContext();
+
+    function detectBeats(audioData) {
+      let threshold = 0.3;
+      let beats = [];
+      let i = 0;
+      while (i < audioData.length) {
+        if (Math.abs(audioData[i]) > threshold) {
+          beats.push(i / audioContext.sampleRate);
+          i += 20000; // skip some samples to avoid duplicates
+        }
+        i++;
+      }
+      return beats;
+    }
+
+    async function loadAudio(file) {
+      const arrayBuffer = await file.arrayBuffer();
+      audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      const rawData = audioBuffer.getChannelData(0);
+      beats = detectBeats(rawData);
+      console.log("Beats detected:", beats.length);
+    }
+
+    async function loadImages(files) {
+      images = await Promise.all([...files].map(file => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.src = URL.createObjectURL(file);
+        });
+      }));
+    }
+
+    function drawFrame(image, scale) {
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      const iw = image.width * scale;
+      const ih = image.height * scale;
+      ctx.drawImage(image, (w - iw) / 2, (h - ih) / 2, iw, ih);
+    }
+
+    async function previewAnimation() {
+      const duration = audioBuffer.duration;
+      let currentImage = 0;
+      let frameRate = 30;
+      let totalFrames = Math.floor(duration * frameRate);
+      let beatFrames = beats.map(t => Math.floor(t * frameRate));
+
+      for (let i = 0; i < totalFrames; i++) {
+        if (beatFrames.includes(i)) {
+          currentImage = (currentImage + 1) % images.length;
+        }
+
+        const beatDistance = beatFrames.find(f => f >= i) - i;
+        let scale = 1 + Math.exp(-Math.abs(beatDistance) / 4) * 0.2;
+
+        drawFrame(images[currentImage], scale);
+
+        const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        animationFrames.push(frame);
+
+        await new Promise(r => setTimeout(r, 1000 / frameRate));
+      }
+    }
+
+    async function exportVideo() {
+      const { createFFmpeg, fetchFile } = FFmpeg;
+      const ffmpeg = createFFmpeg({ log: true });
+      await ffmpeg.load();
+
+      const width = canvas.width;
+      const height = canvas.height;
+      const frameRate = 30;
+
+      // Write PNG frames
+      for (let i = 0; i < animationFrames.length; i++) {
+        const offscreen = new OffscreenCanvas(width, height);
+        const offctx = offscreen.getContext('2d');
+        offctx.putImageData(animationFrames[i], 0, 0);
+        const blob = await offscreen.convertToBlob({ type: 'image/png' });
+        ffmpeg.FS('writeFile', `frame_${i.toString().padStart(4, '0')}.png`, await fetchFile(blob));
+      }
+
+      // Add audio
+      ffmpeg.FS('writeFile', 'audio.mp3', await fetchFile(audioInput.files[0]));
+
+      // Encode video
+      await ffmpeg.run(
+        '-framerate', `${frameRate}`,
+        '-i', 'frame_%04d.png',
+        '-i', 'audio.mp3',
+        '-c:v', 'libvpx-vp9',
+        '-c:a', 'libvorbis',
+        '-pix_fmt', 'yuv420p',
+        '-shortest',
+        'output.webm'
+      );
+
+      const data = ffmpeg.FS('readFile', 'output.webm');
+      const url = URL.createObjectURL(new Blob([data.buffer], { type: 'video/webm' }));
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'edit.webm';
+      a.click();
+    }
+
+    startButton.onclick = async () => {
+      if (!audioInput.files[0] || imageInput.files.length === 0) return alert("Ajoute audio + images");
+      await loadAudio(audioInput.files[0]);
+      await loadImages(imageInput.files);
+      animationFrames = [];
+      previewAnimation();
+    };
+
+    exportButton.onclick = async () => {
+      exportButton.innerText = "Export en cours...";
+      await exportVideo();
+      exportButton.innerText = "Exporter en vidéo";
+    };
+  </script>
+</body>
+</html>
